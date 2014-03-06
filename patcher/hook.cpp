@@ -3,6 +3,8 @@
 
 #pragma comment(linker,"/entry:DllMain")
 
+BOOL InjectProcess(HANDLE hp,HANDLE ht,TCHAR* dllName);
+
 typedef struct _FILE_BOTH_DIR_INFORMATION {
 
     ULONG                   NextEntryOffset;
@@ -66,6 +68,19 @@ typedef int (WINAPI *NtQueryFullAttributesFileRoutine)(
     _Out_  PFILE_NETWORK_OPEN_INFORMATION FileInformation
     );
 
+typedef BOOL (WINAPI *CreateProcessWRoutine)(
+	_In_opt_     LPCTSTR lpApplicationName,
+	_Inout_opt_  LPTSTR lpCommandLine,
+	_In_opt_     LPSECURITY_ATTRIBUTES lpProcessAttributes,
+	_In_opt_     LPSECURITY_ATTRIBUTES lpThreadAttributes,
+	_In_         BOOL bInheritHandles,
+	_In_         DWORD dwCreationFlags,
+	_In_opt_     LPVOID lpEnvironment,
+	_In_opt_     LPCTSTR lpCurrentDirectory,
+	_In_         LPSTARTUPINFO lpStartupInfo,
+	_Out_        LPPROCESS_INFORMATION lpProcessInformation
+	);
+
 int WINAPI MyNtQueryDirectoryFile(
     NtQueryDirectoryFileRoutine func,
     _In_      HANDLE FileHandle,
@@ -114,6 +129,33 @@ int WINAPI MyNtQueryFullAttributesFile(NtQueryFullAttributesFileRoutine func,PVO
     return status;
 }
 
+BOOL WINAPI MyCreateProcessW(
+	CreateProcessWRoutine func,
+	_In_opt_     LPCTSTR lpApplicationName,
+	_Inout_opt_  LPTSTR lpCommandLine,
+	_In_opt_     LPSECURITY_ATTRIBUTES lpProcessAttributes,
+	_In_opt_     LPSECURITY_ATTRIBUTES lpThreadAttributes,
+	_In_         BOOL bInheritHandles,
+	_In_         DWORD dwCreationFlags,
+	_In_opt_     LPVOID lpEnvironment,
+	_In_opt_     LPCTSTR lpCurrentDirectory,
+	_In_         LPSTARTUPINFO lpStartupInfo,
+	_Out_        LPPROCESS_INFORMATION lpProcessInformation
+	)
+{
+	int hasSus= (dwCreationFlags & CREATE_SUSPENDED);
+	dwCreationFlags |= CREATE_SUSPENDED;
+	BOOL ret=func(lpApplicationName,lpCommandLine,lpProcessAttributes,lpThreadAttributes,bInheritHandles,
+		dwCreationFlags,lpEnvironment,lpCurrentDirectory,lpStartupInfo,lpProcessInformation);
+	if(ret)
+	{
+		InjectProcess(lpProcessInformation->hProcess,lpProcessInformation->hThread,L"patcher.dll");
+	}
+	if(!hasSus)
+		ResumeThread(lpProcessInformation->hThread);
+	return ret;
+}
+
 int WINAPI DllMain( HANDLE hDllHandle, DWORD dwReason, LPVOID lpreserved )
 {
     if(dwReason==DLL_PROCESS_ATTACH)
@@ -146,11 +188,21 @@ int WINAPI DllMain( HANDLE hDllHandle, DWORD dwReason, LPVOID lpreserved )
         func=GetProcAddress(hm,"ZwQueryFullAttributesFile");
         if(!InitializeHookSrcObject(&src,func) ||
             !InitializeStubObject(&stub,buff+200,800,8,STUB_DIRECTLYRETURN|STUB_OVERRIDEEAX) ||
-            !Hook32(&src,0,&stub,MyNtQueryAttributesFile,"f12"))
+            !Hook32(&src,0,&stub,MyNtQueryFullAttributesFile,"f12"))
         {
             MessageBox(0,L"无法hook函数3",0,0);
             return FALSE;
         }
+
+		hm=LoadLibrary(L"kernel32.dll");
+		func=GetProcAddress(hm,"CreateProcessW");
+		if(!InitializeHookSrcObject(&src,func) ||
+			!InitializeStubObject(&stub,buff+300,700,40,STUB_DIRECTLYRETURN|STUB_OVERRIDEEAX) ||
+			!Hook32(&src,0,&stub,MyCreateProcessW,"f123456789A"))
+		{
+			MessageBox(0,L"无法hook函数4",0,0);
+			return FALSE;
+		}
    }
     return TRUE;
 }
